@@ -68,9 +68,73 @@ function onProviderChange() {
 const dropZone = document.getElementById('drop-zone');
 dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
 dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
-dropZone.addEventListener('drop', e => { e.preventDefault(); dropZone.classList.remove('drag-over'); handleFiles(e.dataTransfer.files); });
+dropZone.addEventListener('drop', async e => {
+  e.preventDefault();
+  dropZone.classList.remove('drag-over');
+  // Check for folder drop via DataTransferItem API
+  const items = e.dataTransfer.items;
+  if (items && items.length > 0) {
+    const entries = [];
+    for (const item of items) {
+      const entry = item.webkitGetAsEntry ? item.webkitGetAsEntry() : null;
+      if (entry) entries.push(entry);
+    }
+    if (entries.some(e => e.isDirectory)) {
+      await processDraggedEntries(entries);
+      updateUploadSummary();
+      return;
+    }
+  }
+  handleFiles(e.dataTransfer.files);
+});
+
+async function processDraggedEntries(entries) {
+  for (const entry of entries) {
+    await traverseEntry(entry, '');
+  }
+}
+
+function traverseEntry(entry, pathPrefix) {
+  return new Promise(resolve => {
+    if (entry.isFile) {
+      entry.file(async file => {
+        if (file.type.startsWith('image/')) {
+          const fullPath = (pathPrefix + '/' + file.name).toLowerCase();
+          const label = fullPath.includes('/fake/') ? 'fake'
+                      : fullPath.includes('/real/') ? 'real' : 'unknown';
+          const b64 = await fileToBase64(file);
+          samples.push({ name: file.name, label, base64: b64, mimeType: file.type });
+        }
+        resolve();
+      });
+    } else if (entry.isDirectory) {
+      const reader = entry.createReader();
+      reader.readEntries(async subEntries => {
+        for (const sub of subEntries) {
+          await traverseEntry(sub, pathPrefix + '/' + entry.name);
+        }
+        resolve();
+      });
+    } else {
+      resolve();
+    }
+  });
+}
 
 function handleFileUpload(e) { handleFiles(e.target.files); }
+
+async function handleFolderUpload(e) {
+  const files = e.target.files;
+  for (const f of files) {
+    if (!f.type.startsWith('image/')) continue;
+    const path = (f.webkitRelativePath || f.name).toLowerCase();
+    const label = path.includes('/fake/') || path.startsWith('fake/') ? 'fake'
+                : path.includes('/real/') || path.startsWith('real/') ? 'real' : 'unknown';
+    const b64 = await fileToBase64(f);
+    samples.push({ name: f.name, label, base64: b64, mimeType: f.type });
+  }
+  updateUploadSummary();
+}
 
 async function handleFiles(files) {
   for (const f of files) {
@@ -296,11 +360,11 @@ function setStatus(type, text) {
   const dot = document.getElementById('status-dot');
   document.getElementById('status-text').textContent = text;
   dot.className = 'w-2 h-2 rounded-full ' + ({
-    running: 'bg-yellow-500 animate-pulse',
+    running: 'bg-amber-500 animate-pulse',
     done: 'bg-emerald-500',
     stopped: 'bg-red-500',
-    ready: 'bg-gray-600'
-  }[type] || 'bg-gray-600');
+    ready: 'bg-gray-300'
+  }[type] || 'bg-gray-300');
 }
 
 // --- Results Rendering ---
@@ -347,23 +411,23 @@ function renderResults(threshold, provider, model) {
 }
 
 function metricCard(label, value, color) {
-  return `<div class="bg-gray-800 rounded-lg p-4 text-center">
-    <div class="text-xs text-gray-500 mb-1">${label}</div>
-    <div class="text-xl font-bold text-${color}-400">${value}</div>
+  return `<div class="bg-gray-50 border border-gray-100 rounded-lg p-4 text-center">
+    <div class="text-xs text-gray-400 mb-1">${label}</div>
+    <div class="text-xl font-bold text-${color}-600">${value}</div>
   </div>`;
 }
 
 function renderConfusionMatrix(tp, fn, fp, tn) {
   document.getElementById('confusion-matrix').innerHTML = `
     <table class="w-full">
-      <thead><tr><th></th><th class="text-center text-red-400 text-xs">Pred: FORGERY</th><th class="text-center text-emerald-400 text-xs">Pred: AUTHENTIC</th></tr></thead>
+      <thead><tr><th></th><th class="text-center text-red-600 text-xs">Pred: FORGERY</th><th class="text-center text-emerald-600 text-xs">Pred: AUTHENTIC</th></tr></thead>
       <tbody>
-        <tr><td class="text-red-400 text-xs font-medium">True: FORGERY</td>
-          <td class="cm-cell bg-red-950/30 text-red-300">${tp} (TP)</td>
-          <td class="cm-cell bg-yellow-950/30 text-yellow-300">${fn} (FN)</td></tr>
-        <tr><td class="text-emerald-400 text-xs font-medium">True: AUTHENTIC</td>
-          <td class="cm-cell bg-yellow-950/30 text-yellow-300">${fp} (FP)</td>
-          <td class="cm-cell bg-emerald-950/30 text-emerald-300">${tn} (TN)</td></tr>
+        <tr><td class="text-red-600 text-xs font-medium">True: FORGERY</td>
+          <td class="cm-cell bg-red-50 text-red-700 border border-red-100">${tp} (TP)</td>
+          <td class="cm-cell bg-amber-50 text-amber-700 border border-amber-100">${fn} (FN)</td></tr>
+        <tr><td class="text-emerald-600 text-xs font-medium">True: AUTHENTIC</td>
+          <td class="cm-cell bg-amber-50 text-amber-700 border border-amber-100">${fp} (FP)</td>
+          <td class="cm-cell bg-emerald-50 text-emerald-700 border border-emerald-100">${tn} (TN)</td></tr>
       </tbody>
     </table>`;
 }
@@ -382,9 +446,9 @@ function renderScoreChart() {
 
   chart.setOption({
     tooltip: { trigger: 'axis' },
-    legend: { data: ['Fake (GT)', 'Real (GT)'], textStyle: { color: '#9ca3af' } },
-    xAxis: { type: 'category', data: bins.slice(0,-1).map(b => `${b}-${b+10}%`), axisLabel: { color: '#6b7280', fontSize: 10 } },
-    yAxis: { type: 'value', axisLabel: { color: '#6b7280' }, splitLine: { lineStyle: { color: '#1f2937' } } },
+    legend: { data: ['Fake (GT)', 'Real (GT)'], textStyle: { color: '#6b7280' } },
+    xAxis: { type: 'category', data: bins.slice(0,-1).map(b => `${b}-${b+10}%`), axisLabel: { color: '#9ca3af', fontSize: 10 } },
+    yAxis: { type: 'value', axisLabel: { color: '#9ca3af' }, splitLine: { lineStyle: { color: '#f3f4f6' } } },
     series: [
       { name: 'Fake (GT)', type: 'bar', data: histogram(fakeScores), itemStyle: { color: '#ef4444' }, barGap: '10%' },
       { name: 'Real (GT)', type: 'bar', data: histogram(realScores), itemStyle: { color: '#22c55e' } }
@@ -398,14 +462,14 @@ function renderScoreChart() {
 function renderDetailTable() {
   const tbody = document.getElementById('detail-tbody');
   tbody.innerHTML = results.map((r, i) => `
-    <tr class="${r.label === r.predicted ? '' : 'bg-red-950/20'}">
-      <td class="text-gray-500">${i+1}</td>
+    <tr class="${r.label === r.predicted ? '' : 'bg-red-50'}">
+      <td class="text-gray-400">${i+1}</td>
       <td class="font-mono text-xs max-w-[200px] truncate" title="${escapeHtml(r.name)}">${escapeHtml(r.name)}</td>
       <td><span class="badge ${r.label==='fake'?'badge-red':'badge-green'}">${r.label}</span></td>
       <td><span class="badge ${r.predicted==='fake'?'badge-red':r.predicted==='real'?'badge-green':'badge-yellow'}">${r.predicted}</span></td>
       <td class="font-mono">${r.score !== null ? r.score + '%' : 'N/A'}</td>
       <td>${r.label === r.predicted ? '<span class="text-emerald-400">&#10003;</span>' : '<span class="text-red-400">&#10007;</span>'}</td>
-      <td><button class="text-indigo-400 hover:text-indigo-300 text-xs" onclick="showDetail(${i})">View</button></td>
+      <td><button class="text-indigo-600 hover:text-indigo-500 text-xs" onclick="showDetail(${i})">View</button></td>
     </tr>`).join('');
 }
 
@@ -439,9 +503,9 @@ function renderThresholdTable() {
   const chart = echarts.init(document.getElementById('threshold-chart'));
   chart.setOption({
     tooltip: { trigger: 'axis' },
-    legend: { data: ['Precision', 'Recall', 'F1-Score'], textStyle: { color: '#9ca3af' } },
-    xAxis: { type: 'category', data: thresholds.map(t => `>=${t}`), axisLabel: { color: '#6b7280' } },
-    yAxis: { type: 'value', min: 0, max: 1, axisLabel: { color: '#6b7280' }, splitLine: { lineStyle: { color: '#1f2937' } } },
+    legend: { data: ['Precision', 'Recall', 'F1-Score'], textStyle: { color: '#6b7280' } },
+    xAxis: { type: 'category', data: thresholds.map(t => `>=${t}`), axisLabel: { color: '#9ca3af' } },
+    yAxis: { type: 'value', min: 0, max: 1, axisLabel: { color: '#9ca3af' }, splitLine: { lineStyle: { color: '#f3f4f6' } } },
     series: [
       { name: 'Precision', type: 'line', data: rows.map(r => r.prec.toFixed(4)), itemStyle: { color: '#818cf8' } },
       { name: 'Recall', type: 'line', data: rows.map(r => r.rec.toFixed(4)), itemStyle: { color: '#34d399' } },
