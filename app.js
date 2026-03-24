@@ -66,6 +66,7 @@ function onProviderChange() {
 
 // --- Drag & Drop ---
 const dropZone = document.getElementById('drop-zone');
+dropZone.addEventListener('click', () => document.getElementById('file-input').click());
 dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
 dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
 dropZone.addEventListener('drop', async e => {
@@ -89,9 +90,11 @@ dropZone.addEventListener('drop', async e => {
 });
 
 async function processDraggedEntries(entries) {
+  showUploadProgress('Reading dropped folder...');
   for (const entry of entries) {
     await traverseEntry(entry, '');
   }
+  hideUploadProgress();
 }
 
 function traverseEntry(entry, pathPrefix) {
@@ -121,10 +124,14 @@ function traverseEntry(entry, pathPrefix) {
   });
 }
 
-function handleFileUpload(e) { handleFiles(e.target.files); }
+function handleFileUpload(e) { handleFiles(e.target.files); e.target.value = ''; }
 
 async function handleFolderUpload(e) {
   const files = e.target.files;
+  if (!files.length) return;
+  showUploadProgress('Reading folder...');
+  let processed = 0;
+  const total = Array.from(files).filter(f => f.type.startsWith('image/')).length;
   for (const f of files) {
     if (!f.type.startsWith('image/')) continue;
     const path = (f.webkitRelativePath || f.name).toLowerCase();
@@ -132,11 +139,16 @@ async function handleFolderUpload(e) {
                 : path.includes('/real/') || path.startsWith('real/') ? 'real' : 'unknown';
     const b64 = await fileToBase64(f);
     samples.push({ name: f.name, label, base64: b64, mimeType: f.type });
+    processed++;
+    showUploadProgress(`Reading folder... ${processed}/${total} images`);
   }
+  hideUploadProgress();
   updateUploadSummary();
+  e.target.value = '';
 }
 
 async function handleFiles(files) {
+  showUploadProgress('Processing files...');
   for (const f of files) {
     if (f.name.endsWith('.zip')) {
       await processZip(f);
@@ -145,15 +157,19 @@ async function handleFiles(files) {
       samples.push({ name: f.name, label: 'unknown', base64: b64, mimeType: f.type });
     }
   }
+  hideUploadProgress();
   updateUploadSummary();
 }
 
 async function processZip(file) {
+  showUploadProgress('Extracting ZIP...');
   const zip = await JSZip.loadAsync(file);
   const entries = Object.keys(zip.files).filter(n => !zip.files[n].dir);
-  for (const path of entries) {
+  const imageEntries = entries.filter(p => /\.(jpg|jpeg|png|webp)$/i.test(p));
+  let processed = 0;
+  const total = imageEntries.length;
+  for (const path of imageEntries) {
     const lower = path.toLowerCase();
-    if (!/\.(jpg|jpeg|png|webp)$/.test(lower)) continue;
     const label = lower.includes('/fake/') || lower.startsWith('fake/') ? 'fake'
                 : lower.includes('/real/') || lower.startsWith('real/') ? 'real' : 'unknown';
     const fname = path.split('/').pop();
@@ -162,6 +178,12 @@ async function processZip(file) {
     const ext = fname.split('.').pop().toLowerCase();
     const mime = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg';
     samples.push({ name: fname, label, base64: b64, mimeType: mime });
+    processed++;
+    if (processed % 5 === 0 || processed === total) {
+      showUploadProgress(`Extracting ZIP... ${processed}/${total} images`);
+      // Yield to UI thread
+      await new Promise(r => setTimeout(r, 0));
+    }
   }
 }
 
@@ -177,6 +199,28 @@ function clearSamples() {
   document.getElementById('upload-summary').classList.add('hidden');
   document.getElementById('sec-results').classList.add('hidden');
   document.getElementById('btn-run').disabled = true;
+}
+
+function showUploadProgress(msg) {
+  const zone = document.getElementById('drop-zone');
+  const inner = zone.querySelector('div');
+  inner.innerHTML = `
+    <div class="flex flex-col items-center gap-2">
+      <svg class="animate-spin w-8 h-8 text-indigo-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+      </svg>
+      <p class="font-medium text-gray-600">${msg}</p>
+    </div>`;
+}
+
+function hideUploadProgress() {
+  const zone = document.getElementById('drop-zone');
+  const inner = zone.querySelector('div');
+  inner.innerHTML = `
+    <svg class="mx-auto mb-3 w-10 h-10 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/></svg>
+    <p class="font-medium text-gray-600">Drop files or folders here</p>
+    <p class="text-xs mt-1">ZIP with fake/ &amp; real/ folders, individual images, or a folder with subfolders</p>`;
 }
 
 function updateUploadSummary() {
