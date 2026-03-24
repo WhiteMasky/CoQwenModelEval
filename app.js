@@ -66,7 +66,11 @@ function onProviderChange() {
 
 // --- Drag & Drop ---
 const dropZone = document.getElementById('drop-zone');
-dropZone.addEventListener('click', () => document.getElementById('file-input').click());
+dropZone.addEventListener('click', (e) => {
+  // Don't trigger if clicking inside an input or button (they handle their own clicks)
+  if (e.target.closest('button') || e.target.closest('input')) return;
+  document.getElementById('file-input').click();
+});
 dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
 dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
 dropZone.addEventListener('drop', async e => {
@@ -124,7 +128,12 @@ function traverseEntry(entry, pathPrefix) {
   });
 }
 
-function handleFileUpload(e) { handleFiles(e.target.files); e.target.value = ''; }
+async function handleFileUpload(e) {
+  const files = e.target.files;
+  e.target.value = '';
+  if (!files.length) return;
+  await handleFiles(files);
+}
 
 async function handleFolderUpload(e) {
   const files = e.target.files;
