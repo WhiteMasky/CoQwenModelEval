@@ -243,6 +243,40 @@ function updateUploadSummary() {
 }
 
 // --- API Calls ---
+// Detect if backend proxy is available (server.py running)
+let useProxy = null; // null = not yet checked, true/false after check
+
+async function checkProxy() {
+  if (useProxy !== null) return useProxy;
+  try {
+    const resp = await fetch('/api/evaluate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    // 400 means the endpoint exists (just missing params)
+    useProxy = resp.status === 400 || resp.ok;
+  } catch {
+    useProxy = false;
+  }
+  return useProxy;
+}
+
+async function callProxy(base64, mimeType, provider, endpoint, model, apiKey, signal) {
+  const resp = await fetch('/api/evaluate', {
+    method: 'POST', signal,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      provider, model, endpoint, apiKey,
+      imageBase64: base64,
+      mimeType,
+      prompt: FORENSIC_PROMPT
+    })
+  });
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({ detail: `HTTP ${resp.status}` }));
+    throw new Error(err.detail || `Proxy error ${resp.status}`);
+  }
+  const data = await resp.json();
+  return data.text;
+}
+
 async function callQwen(base64, mimeType, endpoint, model, apiKey, signal) {
   const url = `${endpoint.replace(/\/$/,'')}/chat/completions`;
   const body = {
@@ -331,7 +365,23 @@ async function startEvaluation() {
   document.getElementById('sec-results').classList.add('hidden');
   setStatus('running', 'Running...');
 
-  const callFn = provider === 'gemini' ? callGemini : callQwen;
+  // Check if backend proxy is available
+  const proxyAvailable = await checkProxy();
+  if (proxyAvailable) {
+    log('Backend proxy detected — API calls will go through server (no CORS issues)');
+  } else {
+    log('No backend proxy — calling APIs directly from browser (may fail due to CORS)');
+    log('Tip: Run "python server.py" for reliable API calls');
+  }
+
+  // Choose call function
+  let callFn;
+  if (proxyAvailable) {
+    callFn = (base64, mimeType, _endpoint, _model, _apiKey, signal) =>
+      callProxy(base64, mimeType, provider, endpoint, model, apiKey, signal);
+  } else {
+    callFn = provider === 'gemini' ? callGemini : callQwen;
+  }
 
   let completed = 0;
   const total = samples.length;
@@ -654,3 +704,17 @@ function exportReport() {
 function escapeHtml(s) {
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
+
+// --- Backend detection on load ---
+(async function detectBackend() {
+  const el = document.getElementById('backend-status');
+  const available = await checkProxy();
+  el.classList.remove('hidden');
+  if (available) {
+    el.className = 'mt-4 px-4 py-3 rounded-lg text-sm bg-emerald-50 text-emerald-700 border border-emerald-200';
+    el.innerHTML = '<strong>Backend connected</strong> — API calls will be proxied through the local server (no CORS issues).';
+  } else {
+    el.className = 'mt-4 px-4 py-3 rounded-lg text-sm bg-amber-50 text-amber-700 border border-amber-200';
+    el.innerHTML = '<strong>No backend detected</strong> — API calls go directly from browser (may fail due to CORS). Run <code class="bg-amber-100 px-1 rounded">python server.py</code> for reliable operation.';
+  }
+})();

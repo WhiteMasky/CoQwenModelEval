@@ -1,23 +1,34 @@
 # CoQwen Model Evaluator
 
-A client-side web application for benchmarking AI models on document/image forgery detection. Supports **Qwen** (OpenAI-compatible) and **Google Gemini** APIs.
+A web application for benchmarking AI models on document/image forgery detection. Supports **Qwen** (OpenAI-compatible) and **Google Gemini** APIs.
 
-Live demo: **https://whitemasky.github.io/CoQwenModelEval/**
+Includes a Python backend server that proxies API calls to avoid browser CORS issues.
 
 ---
 
 ## Quick Start
 
-### 1. Open the App
-
-Visit the GitHub Pages URL above, or clone and open `index.html` locally:
+### 1. Clone and Install
 
 ```bash
 git clone https://github.com/WhiteMasky/CoQwenModelEval.git
 cd CoQwenModelEval
-# Open index.html in any browser — no build step needed
-open index.html
+pip install -r requirements.txt
 ```
+
+### 2. Start the Server
+
+```bash
+python server.py
+```
+
+This starts a local server at **http://localhost:8765** that:
+- Serves the frontend (HTML + JS)
+- Proxies API calls to Qwen/Gemini (avoids CORS issues)
+
+### 3. Open in Browser
+
+Open **http://localhost:8765** in your browser. You should see a green "Backend connected" banner in the config section.
 
 ### 2. Configure Your Model
 
@@ -92,9 +103,17 @@ The app sends each test image to the AI model along with a structured forensic a
 
 ### Architecture
 
-- **Pure client-side** — All API calls are made directly from the browser. No backend or server required.
-- **No data leaves your browser** except to the API endpoint you configure.
-- **GitHub Pages compatible** — Static HTML + JS, no build step.
+- **Frontend**: Pure HTML + JS (TailwindCSS, ECharts, JSZip from CDN). No build step.
+- **Backend** (`server.py`): FastAPI server that proxies API calls to Qwen/Gemini, avoiding CORS. Required for reliable operation.
+- **GitHub Pages**: The frontend can also be opened directly in a browser, but API calls will fail due to CORS unless the backend is running.
+
+### Why a Backend?
+
+Browser security (CORS) blocks direct `fetch` calls from a web page to Qwen/Gemini API endpoints. The backend server acts as a same-origin proxy:
+
+```
+Browser → localhost:8765/api/evaluate → Qwen/Gemini API → response back
+```
 
 ---
 
