@@ -398,14 +398,13 @@ async function startEvaluation() {
     else semaphore.count--;
   }
 
-  const MAX_CLIENT_RETRIES = 2;
-  const CLIENT_RETRY_DELAYS = [10000, 30000]; // 10s, 30s
+  const MAX_CLIENT_RETRIES = 30;
 
   const tasks = samples.map(async (sample, idx) => {
     await acquire();
     if (!running) { release(); return; }
     let lastErr = null;
-    for (let attempt = 0; attempt <= MAX_CLIENT_RETRIES; attempt++) {
+    for (let attempt = 0; attempt < MAX_CLIENT_RETRIES; attempt++) {
       if (!running) { release(); return; }
       try {
         if (attempt > 0) {
@@ -431,12 +430,18 @@ async function startEvaluation() {
       } catch (err) {
         if (err.name === 'AbortError') { release(); return; }
         lastErr = err;
-        const isTimeout = err.message && (err.message.includes('timed out') || err.message.includes('timeout') || err.message.includes('504'));
-        const isServerError = err.message && err.message.includes('50');
-        if ((isTimeout || isServerError) && attempt < MAX_CLIENT_RETRIES) {
-          const delay = CLIENT_RETRY_DELAYS[attempt] || 30000;
-          log(`  !! ${sample.name}: ${err.message} — retrying in ${delay/1000}s...`);
-          await new Promise(r => setTimeout(r, delay));
+        const isRetryable = err.message && (
+          err.message.includes('timed out') ||
+          err.message.includes('timeout') ||
+          err.message.includes('504') ||
+          err.message.includes('502') ||
+          err.message.includes('503') ||
+          err.message.includes('500')
+        );
+        if (isRetryable && attempt < MAX_CLIENT_RETRIES - 1) {
+          const delay = Math.min(5 + attempt * 2, 30); // 5s, 7s, 9s ... capped at 30s
+          log(`  !! ${sample.name}: ${err.message} — retrying in ${delay}s (attempt ${attempt+1}/${MAX_CLIENT_RETRIES})...`);
+          await new Promise(r => setTimeout(r, delay * 1000));
           continue;
         }
         break;
@@ -444,7 +449,7 @@ async function startEvaluation() {
     }
     if (lastErr) {
       results.push({ name: sample.name, label: sample.label, score: null, predicted: 'error', response: '', error: lastErr.message });
-      log(`  !! ${sample.name}: ERROR - ${lastErr.message}`);
+      log(`  !! ${sample.name}: FAILED after ${MAX_CLIENT_RETRIES} attempts - ${lastErr.message}`);
     }
     completed++;
     updateProgress(completed, total);
