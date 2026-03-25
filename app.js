@@ -398,28 +398,53 @@ async function startEvaluation() {
     else semaphore.count--;
   }
 
+  const MAX_CLIENT_RETRIES = 2;
+  const CLIENT_RETRY_DELAYS = [10000, 30000]; // 10s, 30s
+
   const tasks = samples.map(async (sample, idx) => {
     await acquire();
     if (!running) { release(); return; }
-    try {
-      log(`[${idx+1}/${total}] Processing ${sample.name}...`);
-      const response = await callFn(sample.base64, sample.mimeType, endpoint, model, apiKey, abortController.signal);
-      const score = parseScore(response);
-      const conclusionLabel = parseConclusion(response);
-      let predicted;
-      if (score !== null) {
-        predicted = score >= threshold ? 'fake' : 'real';
-      } else if (conclusionLabel) {
-        predicted = conclusionLabel === 'forgery' ? 'fake' : 'real';
-      } else {
-        predicted = 'unknown';
+    let lastErr = null;
+    for (let attempt = 0; attempt <= MAX_CLIENT_RETRIES; attempt++) {
+      if (!running) { release(); return; }
+      try {
+        if (attempt > 0) {
+          log(`  [Retry ${attempt}/${MAX_CLIENT_RETRIES}] ${sample.name}...`);
+        } else {
+          log(`[${idx+1}/${total}] Processing ${sample.name}...`);
+        }
+        const response = await callFn(sample.base64, sample.mimeType, endpoint, model, apiKey, abortController.signal);
+        const score = parseScore(response);
+        const conclusionLabel = parseConclusion(response);
+        let predicted;
+        if (score !== null) {
+          predicted = score >= threshold ? 'fake' : 'real';
+        } else if (conclusionLabel) {
+          predicted = conclusionLabel === 'forgery' ? 'fake' : 'real';
+        } else {
+          predicted = 'unknown';
+        }
+        results.push({ name: sample.name, label: sample.label, score, predicted, response, error: null });
+        log(`  -> ${sample.name}: score=${score}%, predicted=${predicted}, truth=${sample.label}`);
+        lastErr = null;
+        break;
+      } catch (err) {
+        if (err.name === 'AbortError') { release(); return; }
+        lastErr = err;
+        const isTimeout = err.message && (err.message.includes('timed out') || err.message.includes('timeout') || err.message.includes('504'));
+        const isServerError = err.message && err.message.includes('50');
+        if ((isTimeout || isServerError) && attempt < MAX_CLIENT_RETRIES) {
+          const delay = CLIENT_RETRY_DELAYS[attempt] || 30000;
+          log(`  !! ${sample.name}: ${err.message} — retrying in ${delay/1000}s...`);
+          await new Promise(r => setTimeout(r, delay));
+          continue;
+        }
+        break;
       }
-      results.push({ name: sample.name, label: sample.label, score, predicted, response, error: null });
-      log(`  -> ${sample.name}: score=${score}%, predicted=${predicted}, truth=${sample.label}`);
-    } catch (err) {
-      if (err.name === 'AbortError') { release(); return; }
-      results.push({ name: sample.name, label: sample.label, score: null, predicted: 'error', response: '', error: err.message });
-      log(`  !! ${sample.name}: ERROR - ${err.message}`);
+    }
+    if (lastErr) {
+      results.push({ name: sample.name, label: sample.label, score: null, predicted: 'error', response: '', error: lastErr.message });
+      log(`  !! ${sample.name}: ERROR - ${lastErr.message}`);
     }
     completed++;
     updateProgress(completed, total);

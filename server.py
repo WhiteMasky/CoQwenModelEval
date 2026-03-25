@@ -38,7 +38,9 @@ app.add_middleware(
 )
 
 # Timeout for model API calls (some models are slow on large images)
-API_TIMEOUT = 120.0
+API_TIMEOUT = 300.0
+MAX_RETRIES = 3
+RETRY_BACKOFF = [5, 15, 30]  # seconds between retries
 
 
 @app.post("/api/evaluate")
@@ -46,6 +48,7 @@ async def evaluate_image(request: Request):
     """
     Proxy endpoint: receives image + config from frontend,
     forwards to Qwen or Gemini API, returns the response.
+    Retries up to MAX_RETRIES times on timeout or 5xx errors.
     """
     body = await request.json()
     provider = body.get("provider", "qwen")
@@ -61,19 +64,32 @@ async def evaluate_image(request: Request):
     if not image_base64:
         raise HTTPException(status_code=400, detail="Image data is required")
 
-    try:
-        async with httpx.AsyncClient(timeout=API_TIMEOUT) as client:
-            if provider == "gemini":
-                result = await call_gemini(client, endpoint, model, api_key, prompt, image_base64, mime_type)
-            else:
-                result = await call_qwen(client, endpoint, model, api_key, prompt, image_base64, mime_type)
-        return JSONResponse(content={"text": result})
-    except httpx.TimeoutException:
-        raise HTTPException(status_code=504, detail="Model API timed out")
-    except httpx.HTTPStatusError as e:
-        raise HTTPException(status_code=e.response.status_code, detail=f"Model API error: {e.response.text[:500]}")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    last_error = None
+    for attempt in range(MAX_RETRIES + 1):
+        try:
+            async with httpx.AsyncClient(timeout=API_TIMEOUT) as client:
+                if provider == "gemini":
+                    result = await call_gemini(client, endpoint, model, api_key, prompt, image_base64, mime_type)
+                else:
+                    result = await call_qwen(client, endpoint, model, api_key, prompt, image_base64, mime_type)
+            return JSONResponse(content={"text": result})
+        except httpx.TimeoutException as e:
+            last_error = e
+            if attempt < MAX_RETRIES:
+                wait = RETRY_BACKOFF[min(attempt, len(RETRY_BACKOFF) - 1)]
+                print(f"[Retry {attempt+1}/{MAX_RETRIES}] Timeout, waiting {wait}s...")
+                await asyncio.sleep(wait)
+                continue
+            raise HTTPException(status_code=504, detail=f"Model API timed out after {MAX_RETRIES + 1} attempts ({API_TIMEOUT}s each)")
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code >= 500 and attempt < MAX_RETRIES:
+                wait = RETRY_BACKOFF[min(attempt, len(RETRY_BACKOFF) - 1)]
+                print(f"[Retry {attempt+1}/{MAX_RETRIES}] Server error {e.response.status_code}, waiting {wait}s...")
+                await asyncio.sleep(wait)
+                continue
+            raise HTTPException(status_code=e.response.status_code, detail=f"Model API error: {e.response.text[:500]}")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
 
 
 async def call_qwen(client, endpoint, model, api_key, prompt, image_base64, mime_type):
