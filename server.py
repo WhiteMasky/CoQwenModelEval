@@ -102,7 +102,8 @@ async def call_qwen(client, endpoint, model, api_key, prompt, image_base64, mime
                 ]
             }
         ],
-        "max_tokens": 2048
+        "max_tokens": 2048,
+        "enable_thinking": False
     }
     resp = await client.post(
         url,
